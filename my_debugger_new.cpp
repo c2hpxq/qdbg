@@ -5,8 +5,10 @@
 #include "breakpoint.h"
 #include "exphandler.h"
 #include "memop.h"
+#include "regop.h"
 
 #define UNINITIALIZED 0xFFFFFFFF
+#define GET_CMD ((DWORD)0x00100)
 
 #define MAX_CMD_LEN 60
 #define MAX_CMD_N 5
@@ -58,7 +60,6 @@ void run() {
 			case EXCEPTION_BREAKPOINT:
 				cout << "\tEXCEPTION_BREAKPOINT" << endl;;
 				dwContinueStatus = exception_handler_breakpoint(&de);
-				get_cmd_from_user(de.dwThreadId);
 				break;
 			case EXCEPTION_SINGLE_STEP:
 				cout << "\tEXCEPTION_SINGLE_STEP" << endl;
@@ -83,6 +84,10 @@ void run() {
 			cout << "[process exited normally]" << endl;
 			break;
 		}
+		if(dwContinueStatus == GET_CMD) {
+			get_cmd_from_user(de.dwThreadId);
+			dwContinueStatus = DBG_CONTINUE;
+		}
 		ContinueDebugEvent(de.dwProcessId, de.dwThreadId, dwContinueStatus);
 	}
 }
@@ -104,10 +109,12 @@ void get_cmd_from_user(DWORD threadID) {
 		cout << "\nmy-debugger$ ";
 		memset(str, 0, MAX_CMD_LEN);
 		gets_s(str);
+		if(!str[0])
+			continue;
 		argv[0] = strtok_s(str, d, &p);
 
 		// quit the debugger
-		if( strcmp(argv[0], "q")==0 )
+		if( strcmp(argv[0], "q")==0 || strcmp(argv[0], "quit")==0 )
 			exit(0);
 
 		// software breakpoint: bp addr
@@ -161,8 +168,38 @@ void get_cmd_from_user(DWORD threadID) {
 			free(buf);
 		}
 
+		// single step into
+		else if( strcmp(argv[0], "s")==0 ) {
+			if (isrunning)
+				break;
+		}
+
+		// single step over (next)
+		else if( strcmp(argv[0], "n")==0 ) {
+			HANDLE th = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, threadID);
+			CONTEXT ctx;
+			ctx.ContextFlags = CONTEXT_ALL;
+			GetThreadContext(th, &ctx);
+			//set trap flag
+			ctx.EFlags |= 0x100;
+			SetThreadContext(th, &ctx);
+			CloseHandle(th);
+			if (isrunning)
+				break;
+		}
+
+		// i r  show all regs
+		else if( strcmp(argv[0], "i")==0 ) {
+			argv[1] = strtok_s(NULL, d, &p);
+			if( strcmp(argv[1], "r")==0 ) {
+				show_all_regs(threadID);
+			}
+			else
+				cout << "error cmd" << endl;
+		}
+
 		// start to run the process
-		else if( strcmp(argv[0], "r")==0 ){
+		else if( strcmp(argv[0], "r")==0 || strcmp(argv[0], "run")==0 ){
 			isrunning = TRUE;
 			cout << "run" << endl;
 			run();
@@ -174,6 +211,7 @@ void get_cmd_from_user(DWORD threadID) {
 				break;
 			else cout << "no process running" << endl;
 		}
+
 		else
 			cout << "error cmd" << endl;
 	}
@@ -252,6 +290,47 @@ DWORD get_base_addr_bak(DWORD processID, char* processName) {
 	
 	return processBaseAddress;
 }
+
+/*
+DWORD get_base_addr1(HANDLE hProcess, DWORD processID, char* processName) {
+	HMODULE hMod;
+	DWORD cbNeeded;
+	TCHAR szProcessName[MAX_PATH] = TEXT("<unknown>");
+
+	if (EnumProcessModulesEx(hProcess, &hMod, sizeof(hMod),
+        &cbNeeded, LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
+		GetModuleBaseName(hProcess, hMod, szProcessName,
+            sizeof(szProcessName) / sizeof(TCHAR));
+		char tmp[50];
+		size_t len;
+		wcstombs_s(&len, tmp, 50, szProcessName, wcslen(szProcessName));
+		printf("tmp: %s\n",tmp);
+		if( !strcmp(tmp, processName) ) 
+			printf("0x%p\n",hMod);
+	}
+	else
+		cout << "Fail to Enum" << endl;
+	return (DWORD)hMod;
+}
+*/
+
+/*
+extern PLOADED_IMAGE ImageLoad(PCSTR, PCSTR);
+extern BOOL ImageUnload(PLOADED_IMAGE);
+
+DWORD get_default_base_addr(char *filename) {
+	PIMAGE_NT_HEADERS pNTHeader;  
+    DWORD ImageBase;  
+    PLOADED_IMAGE pImage;  
+    pImage = ImageLoad(filename, NULL);  
+    if(pImage == NULL)  
+		return -1;  
+    pNTHeader = pImage->FileHeader;  
+    ImageBase = pNTHeader->OptionalHeader.ImageBase;  
+    ImageUnload(pImage);  
+    return ImageBase;  
+}
+*/
 
 char* get_process_name(char* fullpath) {
 	const char *d = "\\";

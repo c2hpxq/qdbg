@@ -3,6 +3,7 @@
 #include "memop.h"
 #include "breakpoint.h"
 
+
 extern BreakPointList bplist;
 extern void get_cmd_from_user(DWORD threadID);
 SoftBreak * waitfor0xcc;
@@ -13,29 +14,28 @@ DWORD exception_handler_breakpoint(LPDEBUG_EVENT pde) {
 	HANDLE th = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, pde->dwThreadId);
 	if (!th)
 		return -1;
-
-	cout <<"Hit Breakpoint @Address: " << hex << addr << endl;
+	cout <<"hit breakpoint @addr: 0x" << hex << addr << endl;
 	//if software bp, change the first byte from '\xCC' to original byte
 	CONTEXT ctx;
 	ctx.ContextFlags = CONTEXT_ALL;
 	GetThreadContext(th, &ctx);
-	
-	//set trap flag on, so we can modify it back to 0xCC after original current instruction is executed
-	ctx.EFlags |= 0x100;
+
 	ctx.Eip -= 1;
-	waitfor0xcc = static_cast<SoftBreak*>(bplist.get_bp_by_addr(ctx.Eip));
-	if (waitfor0xcc == NULL){
+	SoftBreak *sb = dynamic_cast<SoftBreak*>(bplist.get_bp_by_addr(ctx.Eip));
+	if (sb == NULL){
 		cout << "not my breakpoint, maybe system breakpoint " << "@" << hex << ctx.Eip << endl;
 		cout << "currently just ignore it" << endl;
 		return DBG_CONTINUE;
 	}
-	char tmp[2] = {waitfor0xcc->get_orig(), '\0'};
+	//record the software breakpoint
+	bplist.set_last_breakpoint(sb);
+	//restore the first byte at the breakpoint
+	char tmp[2] = {sb->get_orig(), '\0'};
 	write_process_memory(ctx.Eip, tmp);
-
+	//set trap flag on, so we can modify it back to 0xCC after original current instruction is executed
+	ctx.EFlags |= 0x100;
 	SetThreadContext(th, &ctx);
 	CloseHandle(th);
-	//record the hardware breakpoint
-	//bplist.set_last_breakpoint(sb);
 	return DBG_CONTINUE;
 }
 
@@ -51,6 +51,7 @@ DWORD exception_handler_singlestep(LPDEBUG_EVENT pde){
 	HANDLE th = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, pde->dwThreadId);
 	if (!th)
 		return -1;
+	DWORD dwContinueStatus;
 	CONTEXT ctx;
 	ctx.ContextFlags = CONTEXT_ALL;
 	GetThreadContext(th, &ctx);
@@ -75,29 +76,25 @@ DWORD exception_handler_singlestep(LPDEBUG_EVENT pde){
 		bplist.delete_hb_inner(slot, &ctx); 
 		//set trap flag
 		ctx.EFlags |= 0x100;
-		SetThreadContext(th, &ctx);
-		CloseHandle(th);
-		return DBG_CONTINUE;
+		dwContinueStatus = DBG_CONTINUE;
 	}
 	//TF flag
 	else {
+		cout << "TF flag has been set" << endl;
 		BreakPoint *last_bp = bplist.get_last_breakpoint();
 		//set by debugger itself
 		if(last_bp) {
 			int type = last_bp->get_type();
-			if (type == SW_BP) {
-			}
-			else if(type == HW_BP) {
+			if (type == SW_BP) 
+				write_process_memory(last_bp->get_addr(), "\xCC");
+			else if(type == HW_BP)
 				bplist.add_hb_inner(&ctx, dynamic_cast<HardBreak *>(last_bp));
-				get_cmd_from_user(pde->dwThreadId);
-			}
 		}
-		//set by single step command
-		else {
-			get_cmd_from_user(pde->dwThreadId);
-		}
+		ctx.EFlags &= ~0x100;
 		bplist.set_last_breakpoint(NULL);
+		dwContinueStatus = GET_CMD;
 	}
-	//write_process_memory(waitfor0xcc->get_addr(), "\xCC");
-	return DBG_CONTINUE;
+	SetThreadContext(th, &ctx);
+	CloseHandle(th);
+	return dwContinueStatus;
 }
